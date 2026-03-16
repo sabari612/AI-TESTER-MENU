@@ -6,8 +6,15 @@ from processing.normalize_menu import normalize_menu
 
 
 def compare_menus(our_menu, reference_menu):
-    our_items = normalize_menu(our_menu)
-    reference_items = normalize_menu(reference_menu)
+    """Compare two menus and return a detailed report of differences.
+
+    Accepts either raw menu data (will be normalized) or already-normalized
+    lists of dicts.  Handles both cases gracefully.
+    """
+    # Normalize if not already normalized lists of dicts
+    our_items = _ensure_normalized(our_menu)
+    reference_items = _ensure_normalized(reference_menu)
+
     remaining_our = list(our_items)
     matched_pairs = []
     report = {
@@ -59,8 +66,9 @@ def compare_menus(our_menu, reference_menu):
                 }
             )
 
-        if missing_image_issue(our_item, reference_item):
-            report["missing_images"].append(missing_image_issue(our_item, reference_item))
+        img_issue = missing_image_issue(our_item, reference_item)
+        if img_issue:
+            report["missing_images"].append(img_issue)
 
         for issue in detect_spelling_errors(our_item.get("description", ""), reference_item.get("description", "")):
             report["spelling_errors"].append({"item": reference_item.get("item"), "field": "description", **issue})
@@ -82,4 +90,15 @@ def compare_menus(our_menu, reference_menu):
         "category_mismatches": len(report["category_mismatches"]),
     }
     return report
+
+
+def _ensure_normalized(menu_data):
+    """Return a normalized list of menu item dicts.
+
+    If the data is already a list of dicts with 'item' keys, return as-is.
+    Otherwise, run normalize_menu to convert it.
+    """
+    if isinstance(menu_data, list) and menu_data and isinstance(menu_data[0], dict) and "item" in menu_data[0]:
+        return menu_data
+    return normalize_menu(menu_data)
 

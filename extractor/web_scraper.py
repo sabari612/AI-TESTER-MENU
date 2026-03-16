@@ -1,6 +1,6 @@
 import json
 
-from processing.normalize_menu import parse_menu_text
+from processing.normalize_menu import parse_menu_text, _is_noise_line
 
 REQUEST_HEADERS = {
     "User-Agent": (
@@ -118,6 +118,8 @@ def read_website_menu(url, html=None):
         raise RuntimeError(_blocked_website_message(url))
 
     soup = BeautifulSoup(html, "html.parser")
+
+    # --- Strategy A: structured JSON-LD data ---
     for script in soup.find_all("script", attrs={"type": "application/ld+json"}):
         try:
             payload = json.loads(script.get_text(strip=True))
@@ -128,12 +130,66 @@ def read_website_menu(url, html=None):
             if isinstance(candidate, dict) and candidate.get("hasMenu"):
                 return candidate["hasMenu"]
 
+    # --- Strategy B: scrape visible text, filtering out non-menu noise ---
+
+    # Remove non-content elements that pollute menu extraction
+    noise_tags = [
+        "nav", "footer", "header", "aside", "form", "button", "input",
+        "select", "textarea", "iframe", "noscript", "svg", "canvas",
+    ]
+    noise_selectors = [
+        "[role='navigation']", "[role='banner']", "[role='contentinfo']",
+        "[role='complementary']", ".cart", ".order", ".sidebar", ".navbar",
+        ".footer", ".header", ".nav", ".checkout", ".modal", ".popup",
+        ".cookie", ".banner", "#cart", "#order", "#sidebar", "#footer",
+        "#header", "#nav", ".social", ".login", ".signup", ".search",
+    ]
+    for tag_name in noise_tags:
+        for el in soup.find_all(tag_name):
+            el.decompose()
+    for sel in noise_selectors:
+        for el in soup.select(sel):
+            el.decompose()
+
+    # Also remove remaining script/style tags
+    for el in soup.find_all(["script", "style"]):
+        el.decompose()
+
     text_blocks = []
-    selectors = ["h1", "h2", "h3", "li", "p", ".menu-item", ".product", ".item"]
-    for selector in selectors:
+    # Prefer menu-specific containers first
+    menu_selectors = [
+        ".menu-item", ".menu-section", ".product", ".item",
+        "[class*='menu']", "[class*='product']", "[class*='food']",
+        "[class*='dish']", "[class*='category']",
+    ]
+    for selector in menu_selectors:
         for element in soup.select(selector):
             content = element.get_text(" ", strip=True)
-            if content:
+            if content and len(content) > 3:
                 text_blocks.append(content)
-    return parse_menu_text("\n".join(dict.fromkeys(text_blocks)))
+
+    # If no menu-specific elements found, fall back to general content
+    if not text_blocks:
+        general_selectors = ["h2", "h3", "li", "p", "td"]
+        for selector in general_selectors:
+            for element in soup.select(selector):
+                content = element.get_text(" ", strip=True)
+                if content and len(content) > 3:
+                    text_blocks.append(content)
+
+    # Deduplicate while preserving order
+    unique_blocks = list(dict.fromkeys(text_blocks))
+
+    # Filter out common non-menu noise patterns
+    filtered = []
+    for block in unique_blocks:
+        if _is_noise_text(block):
+            continue
+        filtered.append(block)
+
+    return parse_menu_text("\n".join(filtered))
+
+
+# Re-use the comprehensive noise filter from normalize_menu
+_is_noise_text = _is_noise_line
 
