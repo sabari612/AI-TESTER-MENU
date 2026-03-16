@@ -1,0 +1,11 @@
+streamlit
+rapidfuzz
+pdfplumber
+pytesseract
+beautifulsoup4
+reportlab
+python-docx
+Pillow
+requests
+cloudscraper
+

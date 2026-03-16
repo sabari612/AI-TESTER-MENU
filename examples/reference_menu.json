@@ -1,0 +1,24 @@
+[
+  {
+    "category": "Starters",
+    "item": "Paneer Tikkaa",
+    "price": 11.99,
+    "description": "Grilled cottage cheese with spicez",
+    "image": ""
+  },
+  {
+    "category": "Drinks",
+    "item": "Butter Chicken",
+    "price": 15.50,
+    "description": "Creamy tomato chicken curry",
+    "image": "butter.jpg"
+  },
+  {
+    "category": "Desserts",
+    "item": "Gulab Jamun",
+    "price": 6.00,
+    "description": "Milk dumplings in syrup",
+    "image": "gulab.jpg"
+  }
+]
+
