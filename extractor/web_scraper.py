@@ -1,6 +1,10 @@
 import json
+import re
 
-from processing.normalize_menu import parse_menu_text, _is_noise_line
+from processing.normalize_menu import (
+    parse_menu_text, _is_noise_line, coerce_price, clean_text,
+    looks_like_category, PRICE_RE,
+)
 
 REQUEST_HEADERS = {
     "User-Agent": (
@@ -106,6 +110,123 @@ def _fetch_website_html(url):
     raise RuntimeError(_blocked_website_message(url))
 
 
+_HEADING_TAGS = {"h1", "h2", "h3", "h4", "h5", "h6"}
+_LEAF_TAGS = {"td", "li", "p", "a", "span"}
+_CATEGORY_SUFFIX_RE = re.compile(r"(?i)(categories|category|items?)$")
+_NOISE_TAGS = frozenset([
+    "script", "style", "nav", "footer", "header", "aside", "form",
+    "button", "input", "select", "textarea", "iframe", "noscript",
+    "svg", "canvas",
+])
+_NOISE_CLASS_KEYWORDS = frozenset([
+    "cart", "sidebar", "navbar", "footer", "nav",
+    "checkout", "modal", "popup", "cookie", "banner", "social",
+    "login", "signup", "search", "accessibility",
+])
+
+
+def _clean_category_text(text):
+    """Strip trailing 'Categories' / 'Category' button text from headings."""
+    cleaned = _CATEGORY_SUFFIX_RE.sub("", text).strip()
+    return clean_text(cleaned) if cleaned else ""
+
+
+def _is_noise_element(element):
+    """Check if an element or any ancestor is a noise container."""
+    tag = (element.name or "").lower()
+    if tag in _NOISE_TAGS:
+        return True
+    classes = " ".join(element.get("class", [])).lower() if hasattr(element, "get") else ""
+    el_id = (element.get("id", "") or "").lower() if hasattr(element, "get") else ""
+    role = (element.get("role", "") or "").lower() if hasattr(element, "get") else ""
+    if role in ("navigation", "banner", "contentinfo", "complementary"):
+        return True
+    for kw in _NOISE_CLASS_KEYWORDS:
+        if kw in classes or kw in el_id:
+            return True
+    return False
+
+
+def _ancestor_is_noise(element):
+    """Check if any ancestor of element is a noise container."""
+    parent = element.parent
+    while parent:
+        if hasattr(parent, "name") and parent.name:
+            if _is_noise_element(parent):
+                return True
+        parent = getattr(parent, "parent", None)
+    return False
+
+
+def _extract_structured_menu(soup):
+    """Walk the DOM in document order without modifying it.
+
+    Uses headings as category markers, skips noise elements programmatically.
+    Returns a list of menu item dicts, or empty list if extraction fails.
+    """
+    body = soup.find("body") or soup
+    current_category = "Uncategorized"
+    rows = []
+    seen_names = set()  # normalized name for dedup
+
+    for element in body.descendants:
+        if not hasattr(element, "name") or element.name is None:
+            continue
+
+        tag = (element.name or "").lower()
+
+        # --- Heading = potential category (check BEFORE noise skip) ---
+        if tag in _HEADING_TAGS:
+            raw = element.get_text(strip=True)
+            heading_text = _clean_category_text(raw)
+            if heading_text and len(heading_text) > 1 and not _is_noise_line(heading_text):
+                if looks_like_category(heading_text) or heading_text.isupper():
+                    current_category = heading_text
+            continue
+
+        # Skip non-leaf tags
+        if tag not in _LEAF_TAGS:
+            continue
+
+        # Skip noise elements and elements inside noise containers
+        if _is_noise_element(element) or _ancestor_is_noise(element):
+            continue
+
+        text = element.get_text(" ", strip=True)
+        if not text or len(text) < 3 or len(text) > 300:
+            continue
+        if _is_noise_line(text):
+            continue
+
+        # Require a price for confident item extraction
+        price = coerce_price(text)
+        if price is None:
+            continue
+
+        # Extract item name by removing price
+        name_text = PRICE_RE.sub("", text).replace("$", "").strip(" -|:")
+        name_text = clean_text(name_text)
+        if not name_text or len(name_text) < 2 or _is_noise_line(name_text):
+            continue
+
+        # Dedup by name only (same item may appear with/without price)
+        dedup_key = name_text.lower()
+        if dedup_key in seen_names:
+            continue
+        seen_names.add(dedup_key)
+
+        rows.append({
+            "category": current_category,
+            "item": name_text,
+            "price": price,
+            "description": "",
+            "image": "",
+        })
+
+    return rows
+
+
+
 def read_website_menu(url, html=None):
     try:
         from bs4 import BeautifulSoup
@@ -130,64 +251,22 @@ def read_website_menu(url, html=None):
             if isinstance(candidate, dict) and candidate.get("hasMenu"):
                 return candidate["hasMenu"]
 
-    # --- Strategy B: scrape visible text, filtering out non-menu noise ---
+    # --- Strategy B: structured DOM extraction (preserves headings) ---
+    # Walk the DOM WITHOUT destroying it first — noise is skipped programmatically
+    # so that heading/category structure is preserved.
+    items = _extract_structured_menu(soup)
+    if items:
+        return items
 
-    # Remove non-content elements that pollute menu extraction
-    noise_tags = [
-        "nav", "footer", "header", "aside", "form", "button", "input",
-        "select", "textarea", "iframe", "noscript", "svg", "canvas",
-    ]
-    noise_selectors = [
-        "[role='navigation']", "[role='banner']", "[role='contentinfo']",
-        "[role='complementary']", ".cart", ".order", ".sidebar", ".navbar",
-        ".footer", ".header", ".nav", ".checkout", ".modal", ".popup",
-        ".cookie", ".banner", "#cart", "#order", "#sidebar", "#footer",
-        "#header", "#nav", ".social", ".login", ".signup", ".search",
-    ]
-    for tag_name in noise_tags:
-        for el in soup.find_all(tag_name):
-            el.decompose()
-    for sel in noise_selectors:
-        for el in soup.select(sel):
-            el.decompose()
-
-    # Also remove remaining script/style tags
+    # --- Strategy C: fallback to flat text extraction ---
+    # Remove noise elements, then extract remaining text
+    for el in soup.find_all(list(_NOISE_TAGS)):
+        el.decompose()
     for el in soup.find_all(["script", "style"]):
         el.decompose()
-
-    text_blocks = []
-    # Prefer menu-specific containers first
-    menu_selectors = [
-        ".menu-item", ".menu-section", ".product", ".item",
-        "[class*='menu']", "[class*='product']", "[class*='food']",
-        "[class*='dish']", "[class*='category']",
-    ]
-    for selector in menu_selectors:
-        for element in soup.select(selector):
-            content = element.get_text(" ", strip=True)
-            if content and len(content) > 3:
-                text_blocks.append(content)
-
-    # If no menu-specific elements found, fall back to general content
-    if not text_blocks:
-        general_selectors = ["h2", "h3", "li", "p", "td"]
-        for selector in general_selectors:
-            for element in soup.select(selector):
-                content = element.get_text(" ", strip=True)
-                if content and len(content) > 3:
-                    text_blocks.append(content)
-
-    # Deduplicate while preserving order
-    unique_blocks = list(dict.fromkeys(text_blocks))
-
-    # Filter out common non-menu noise patterns
-    filtered = []
-    for block in unique_blocks:
-        if _is_noise_text(block):
-            continue
-        filtered.append(block)
-
-    return parse_menu_text("\n".join(filtered))
+    body = soup.find("body") or soup
+    raw_text = body.get_text("\n", strip=True)
+    return parse_menu_text(raw_text)
 
 
 # Re-use the comprehensive noise filter from normalize_menu
