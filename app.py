@@ -623,10 +623,20 @@ def load_menu(payload):
 
 
 def show_issue_section(title, rows):
-    if rows:
-        st.dataframe(rows, use_container_width=True)
-    else:
+    if not rows:
         st.success(f"✅ No {title.lower()} found — looking good!")
+        return
+
+    # Paginate
+    page_size = 10
+    total_pages = max(1, -(-len(rows) // page_size))
+    page_key = f"issue_page_{title.replace(' ', '_')}"
+    page = st.number_input("Page", min_value=1, max_value=total_pages, value=1,
+                           step=1, key=page_key)
+    start = (page - 1) * page_size
+    end = start + page_size
+    st.caption(f"Showing {start + 1}–{min(end, len(rows))} of {len(rows)}  ·  Page {page} of {total_pages}")
+    st.dataframe(rows[start:end], use_container_width=True)
 
 
 ISSUE_ICONS = {
@@ -645,6 +655,9 @@ def _diff_badge(is_same, label_same="SAME", label_diff="DIFFERENT"):
     if is_same:
         return f'<span style="background:#D1FAE5;color:#065F46;padding:2px 8px;border-radius:4px;font-size:0.7rem;font-weight:700;">✅ {label_same}</span>'
     return f'<span style="background:#FEE2E2;color:#991B1B;padding:2px 8px;border-radius:4px;font-size:0.7rem;font-weight:700;">❌ {label_diff}</span>'
+
+
+ITEMS_PER_PAGE = 10
 
 
 def _render_matched_items_table(matched_items):
@@ -672,7 +685,17 @@ def _render_matched_items_table(matched_items):
         st.info("No items match the selected filter.")
         return
 
-    for m in filtered:
+    # Pagination
+    total_pages = max(1, -(-len(filtered) // ITEMS_PER_PAGE))  # ceil division
+    page = st.number_input("Page", min_value=1, max_value=total_pages, value=1,
+                           step=1, key="matched_page")
+    start_idx = (page - 1) * ITEMS_PER_PAGE
+    end_idx = start_idx + ITEMS_PER_PAGE
+    page_items = filtered[start_idx:end_idx]
+
+    st.caption(f"Showing {start_idx + 1}–{min(end_idx, len(filtered))} of {len(filtered)} items  ·  Page {page} of {total_pages}")
+
+    for m in page_items:
         diffs = m.get("differences", [])
         is_perfect = m.get("is_perfect_match", False)
         score = m.get("score", 0)
@@ -911,6 +934,15 @@ def _render_highlighted_table(rows: list[dict]):
     summary_parts = [f"**{count}** {typ}" for typ, count in type_counts.items()]
     st.markdown(f"Showing **{len(rows)}** differences: " + " · ".join(summary_parts))
 
+    # Pagination
+    total_pages = max(1, -(-len(rows) // ITEMS_PER_PAGE))
+    page = st.number_input("Page", min_value=1, max_value=total_pages, value=1,
+                           step=1, key="highlight_page")
+    start_idx = (page - 1) * ITEMS_PER_PAGE
+    end_idx = start_idx + ITEMS_PER_PAGE
+    page_rows = rows[start_idx:end_idx]
+    st.caption(f"Showing {start_idx + 1}–{min(end_idx, len(rows))} of {len(rows)}  ·  Page {page} of {total_pages}")
+
     cols = ["Type", "Item", "Matched With", "Our Value", "Expected Value", "Reason"]
     html = '<table style="width:100%; border-collapse:collapse; font-size:0.82rem;">'
     html += '<thead><tr style="background:#1a1a2e; color:white;">'
@@ -918,7 +950,7 @@ def _render_highlighted_table(rows: list[dict]):
         html += f'<th style="padding:10px 12px; text-align:left;">{col}</th>'
     html += '</tr></thead><tbody>'
 
-    for row in rows:
+    for row in page_rows:
         bg, fg, _ = _HIGHLIGHT_COLORS.get(
             next((k for k, v in _HIGHLIGHT_COLORS.items() if v[2] == row["Type"]), ""),
             ("#FFF", "#000", "")
@@ -991,10 +1023,11 @@ def render_comparison_tab():
             progress.progress(100, text="✅ Comparison complete!")
             time.sleep(0.5)
         except Exception as exc:
+            import traceback
+            traceback.print_exc()
             update_comparison(comp_id, status="Failed")
             progress.empty()
             st.error(f"⚠️ Processing failed: {exc}")
-            st.rerun()
             return
         progress.empty()
         st.rerun()
@@ -1121,15 +1154,15 @@ def render_reports_tab():
         else:
             st.markdown(f'<div class="result-fail">⚠️ {total} issue(s) detected across {with_diffs} items</div>', unsafe_allow_html=True)
 
-        show_issue_tabs(report)
-
-        # Download
+        # Download button at top
         if pdf_bytes:
             st.download_button(
                 "📥 Download PDF Report", data=pdf_bytes,
                 file_name=f"report_{comp['title'].replace(' ', '_')}.pdf",
                 mime="application/pdf", use_container_width=True,
             )
+
+        show_issue_tabs(report)
 
         with st.expander("📄 Raw JSON Report", expanded=False):
             st.code(json.dumps(report, indent=2), language="json")
