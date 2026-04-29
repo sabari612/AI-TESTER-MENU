@@ -16,11 +16,12 @@ class WebScraperTests(unittest.TestCase):
 
         self.assertEqual(result, {"items": [{"name": "Burger"}]})
 
+    @patch("extractor.web_scraper._fetch_with_playwright", return_value=None)
     @patch("extractor.web_scraper._fetch_with_cache_proxy", return_value=None)
     @patch("extractor.web_scraper._fetch_with_cloudscraper")
     @patch("extractor.web_scraper._fetch_with_requests")
     def test_read_website_menu_raises_friendly_message_for_blocked_sites(
-        self, mock_requests, mock_cloudscraper, mock_cache
+        self, mock_requests, mock_cloudscraper, mock_cache, mock_playwright
     ):
         blocked_response = Mock(ok=False, status_code=403, text="Enable JavaScript and cookies to continue")
         mock_requests.return_value = blocked_response
